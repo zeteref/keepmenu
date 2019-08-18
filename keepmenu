@@ -5,6 +5,7 @@
 """
 from contextlib import closing
 import errno
+import re
 import itertools
 import locale
 from multiprocessing import managers  # pylint: disable=unused-import
@@ -1013,6 +1014,13 @@ def view_entry(kp_entry):
               '**********' if kp_entry.password else "Password: None",
               kp_entry.url or "URL: None",
               "Notes: <Enter to view>" if kp_entry.notes else "Notes: None"]
+
+    def show_prop(key):
+        val = kp_entry.custom_properties[key]
+        return '***' if val.startswith('P:') else val
+
+    fields += [f'@({key}): {show_prop(key)}' for key in kp_entry.custom_properties]
+
     kp_entries_b = "\n".join(fields).encode(ENC)
     sel = dmenu_select(len(fields), inp=kp_entries_b)
     if sel == "Notes: <Enter to view>":
@@ -1025,6 +1033,8 @@ def view_entry(kp_entry):
         if sel != "URL: None":
             webbrowser.open(sel)
         sel = ""
+    elif sel.startswith('@'):
+        return kp_entry.custom_properties[re.search(r'@\((.+)(?=\):)', sel).group(1)]
     return sel
 
 
