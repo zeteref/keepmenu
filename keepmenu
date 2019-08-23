@@ -1017,7 +1017,7 @@ def view_entry(kp_entry):
 
     def show_prop(key):
         val = kp_entry.custom_properties[key]
-        return '***' if val.startswith('P:') else val
+        return '*********' if key.startswith('#') else val
 
     fields += [f'@({key}): {show_prop(key)}' for key in kp_entry.custom_properties]
 
@@ -1033,8 +1033,8 @@ def view_entry(kp_entry):
         if sel != "URL: None":
             webbrowser.open(sel)
         sel = ""
-    elif sel.startswith('@'):
-        return kp_entry.custom_properties[re.search(r'@\((.+)(?=\):)', sel).group(1)]
+    elif re.search('^@', str(sel)):
+        return kp_entry.custom_properties[re.search(r'@\((.+)(?=\):)', str(sel)).group(1)]
     return sel
 
 
