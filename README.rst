@@ -24,7 +24,8 @@ Features
   can be viewed line-by-line from within dmenu and the selected line will be
   typed when selected.
 - Open the URL in the default web browser from the View/Type menu.
-- Alternate keyboard languages and layouts supported via xdotool.
+- Alternate keyboard languages and layouts supported via xdotool or ydotool (for
+  Wayland)
 - Edit entry title, username, URL and password (manually typed or auto-generate)
 - Edit notes using terminal or gui editor (set in config.ini, or uses $EDITOR)
 - Add and Delete entries
@@ -52,9 +53,9 @@ Requirements
    configuration/theming should be done via Xresources.
 4. (optional) Pinentry. Make sure to set which flavor of pinentry command to use
    in the config file.
-5. (optional) xdotool. If you have a lot of Unicode characters or use a non-U.S.
-   English keyboard layout, xdotool is necessary to handle typing those
-   characters.
+5. (optional) xdotool or ydotool (for Wayland). If you have a lot of Unicode
+   characters or use a non-U.S.  English keyboard layout, xdotool is necessary
+   to handle typing those characters.
 
 Installation
 ------------
@@ -83,10 +84,11 @@ Installation
   + Adjust `pw_cache_period_min` if desired. Default is 6 hours (360 min).
   + Set the dmenu_command to `rofi` if you are using that instead
   + Adjust the autotype_default, if desired. Allowed codes are the
-    `Keepass 2.x codes`_ except for repetitions and command codes (DELAY, etc.).
+    `Keepass 2.x codes`_ except for repetitions and most command codes. `{DELAY
+    x}` (in milliseconds) is supported.
     Individual autotype sequences can be edited or disabled inside Keepmenu.
-  + Set `type_library = xdotool` if you need support for non-U.S. English
-    keyboard layouts and/or characters.
+  + Set `type_library = xdotool` or `type_library = ydotool` (Wayland) if you
+    need support for non-U.S. English keyboard layouts and/or characters.
 
     * When using xdotool, call `setxkbmap` to set your keyboard type somewhere
       in your window manager or desktop environment initialization. For example:
