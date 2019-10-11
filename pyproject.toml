@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "keepmenu"
+version = "0.1.0"
+description = ""
+authors = ["zeteref <zeteref@gmail.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.7"
+pykeepass = "^3.0"
+PyUserInput = "^0.1.11"
+
+[tool.poetry.dev-dependencies]
+
+[tool.poetry.scripts]
+keepmenu = "keepmenu:main"
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"

@@ -1395,7 +1395,7 @@ def run():
         os.remove(expanduser(AUTH_FILE))
 
 
-if __name__ == '__main__':
+def main():
     if len(sys.argv) > 1:
         print("See `man keepmenu` for help")
         sys.exit()
@@ -1405,5 +1405,8 @@ if __name__ == '__main__':
     except socket.error:  ## Use socket.error for Python 2 & 3 compat.
         process_config()
         run()
+
+if __name__ == '__main__':
+    main()
 
 # vim: set et ts=4 sw=4 :
