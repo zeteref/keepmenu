@@ -4,6 +4,7 @@
 
 """
 from contextlib import closing
+from enum import Enum
 import errno
 import re
 import itertools
@@ -52,6 +53,15 @@ if sys.version_info.major < 3:
 
 AUTH_FILE = expanduser("~/.cache/.keepmenu-auth")
 CONF_FILE = expanduser("~/.config/keepmenu/config.ini")
+
+class MenuOptions(Enum):
+    IndividualEntries = 0
+    Edit = 1
+    Add = 2
+    ManageGroups = 3
+    ReloadDB = 4
+    KillDaemon = 5
+    TypePassword = 6
 
 def find_free_port():
     """Find random free port to use for BaseManager server
@@ -1285,12 +1295,15 @@ class DmenuRunner(Process):
         except AttributeError:
             pass
         self._set_timer()
-        options = ['View/Type Individual entries',
-                   'Edit entries',
-                   'Add entry',
-                   'Manage groups',
-                   'Reload database',
-                   'Kill Keepmenu daemon']
+        options = {
+                   'Type password':MenuOptions.TypePassword,
+                   'View/Type Individual entries':MenuOptions.IndividualEntries,
+                   'Edit entries':MenuOptions.Edit,
+                   'Add entry':MenuOptions.Add,
+                   'Manage groups':MenuOptions.ManageGroups,
+                   'Reload database':MenuOptions.ReloadDB,
+                   'Kill Keepmenu daemon':MenuOptions.KillDaemon,
+                   }
         if CONF.has_option("database", "hide_groups"):
             hid_groups = CONF.get("database", "hide_groups").split("\n")
             # Validate ignored group names in config.ini
@@ -1298,14 +1311,26 @@ class DmenuRunner(Process):
                           [j.name for j in self.kpo.groups]]
         else:
             hid_groups = []
-        sel = view_all_entries(options, [i for i in self.kpo.entries if not
+        opt_descriptions = list(options.keys())
+        sel = view_all_entries(opt_descriptions, [i for i in self.kpo.entries if not
                                          any(j in i.path.rstrip(i.title) for
                                              j in hid_groups)])
+
+
+
         if not sel:
             return
-        if sel == options[0]:  # ViewType Individual entries
-            options = []
-            sel = view_all_entries(options, [i for i in self.kpo.entries if not
+        elif options.get(sel, None) == MenuOptions.TypePassword:
+            sel = view_all_entries([], [i for i in self.kpo.entries if not
+                                             any(j in i.path.rstrip(i.title) for
+                                                 j in hid_groups)])
+            try:
+                entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+            except (ValueError, TypeError):
+                return
+            type_text(entry.password)
+        elif options.get(sel, None) == MenuOptions.IndividualEntries:  # ViewType Individual entries
+            sel = view_all_entries([], [i for i in self.kpo.entries if not
                                              any(j in i.path.rstrip(i.title) for
                                                  j in hid_groups)])
             try:
@@ -1314,9 +1339,8 @@ class DmenuRunner(Process):
                 return
             text = view_entry(entry)
             type_text(text)
-        elif sel == options[1]:  # Edit entries
-            options = []
-            sel = view_all_entries(options, self.kpo.entries)
+        elif options.get(sel, None) == MenuOptions.Edit:  # Edit entries
+            sel = view_all_entries([], self.kpo.entries)
             try:
                 entry = self.kpo.entries[int(sel.split('-', 1)[0])]
             except (ValueError, TypeError):
@@ -1326,22 +1350,22 @@ class DmenuRunner(Process):
                 edit = edit_entry(self.kpo, entry)
             self.kpo.save()
             self.kpo = get_entries(self.database)
-        elif sel == options[2]:  # Add entry
+        elif options.get(sel, None) == MenuOptions.Add:  # Add entry
             entry = add_entry(self.kpo)
             if entry:
                 self.kpo.save()
                 self.kpo = get_entries(self.database)
-        elif sel == options[3]:  # Manage groups
+        elif options.get(sel, None) == MenuOptions.ManageGroups:  # Manage groups
             group = manage_groups(self.kpo)
             if group:
                 self.kpo.save()
                 self.kpo = get_entries(self.database)
-        elif sel == options[4]:  # Reload database
+        elif options.get(sel, None) == MenuOptions.ReloadDB:  # Reload database
             self.kpo = get_entries(self.database)
             if not self.kpo:
                 return
             self.dmenu_run()
-        elif sel == options[5]:  # Kill keepmenu daemon
+        elif options.get(sel, None) == MenuOptions.KillDaemon:  # Kill keepmenu daemon
             try:
                 self.server.kill_flag.set()
             except (EOFError, IOError):
