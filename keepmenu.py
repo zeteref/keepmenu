@@ -81,9 +81,6 @@ class MenuOptions(Enum):
            self.TypeEntry:'Select entry to autotype',
         }.get(self)
 
-    def __str__(self):
-        return self.description()
-
 def find_free_port():
     """Find random free port to use for BaseManager server
 
@@ -1316,7 +1313,7 @@ class DmenuRunner(Process):
 
         self._set_timer()
 
-        opt_descriptions = [x for x in self.options.keys()]
+        opt_descriptions = [x.description() for x in self.options.keys()]
         selection = view_all_entries(opt_descriptions, self.get_visible_entries())
 
         option = self.get_option(selection)
