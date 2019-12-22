@@ -1318,6 +1318,8 @@ class DmenuRunner(Process):
 
         option = self.get_option(selection)
 
+        LOG.info('op %s, sel %s, def %s', option, selection, default_option)
+
         try:
             if option:
                 option()
@@ -1338,13 +1340,14 @@ class DmenuRunner(Process):
         entry = self.kpo.entries[int(sel.split('-', 1)[0])]
         type_text(entry.password)
 
-    def view_entry(self, *args):
-        sel = view_all_entries([], self.get_visible_entries())
+    def view_entry(self, sel=None):
+        if not sel:
+            sel = view_all_entries([], self.get_visible_entries())
         entry = self.kpo.entries[int(sel.split('-', 1)[0])]
         text = view_entry(entry)
         type_text(text)
 
-    def edit_entry(self, *args):
+    def edit_entry(self):
         sel = view_all_entries([], self.kpo.entries)
         entry = self.kpo.entries[int(sel.split('-', 1)[0])]
         edit = True
@@ -1355,27 +1358,27 @@ class DmenuRunner(Process):
         self.kpo.save()
         self.kpo = get_entries(self.database)
 
-    def add_entry(self, *args):
+    def add_entry(self):
         entry = add_entry(self.kpo)
 
         if entry:
             self.kpo.save()
             self.kpo = get_entries(self.database)
 
-    def manage_groups(self, *args):
+    def manage_groups(self):
         group = manage_groups(self.kpo)
 
         if group:
             self.kpo.save()
             self.kpo = get_entries(self.database)
 
-    def reload_db(self, *args):
+    def reload_db(self):
         self.kpo = get_entries(self.database)
 
         if self.kpo:
             self.dmenu_run(MenuOptions.TypeEntry)
 
-    def kill_daemon(self, *args):
+    def kill_daemon(self):
         try:
             self.server.kill_flag.set()
         except (EOFError, IOError):
@@ -1430,9 +1433,11 @@ class Server(Process):
         return mgr
 
 
-    def show_dmenu(self, args=None):
-        if args and args.type_password == True:
+    def show_dmenu(self, args):
+        if args.type_password == True:
             default_option = MenuOptions.TypePassword
+        elif args.view_entry == True:
+            default_option = MenuOptions.ViewEntry
         else:
             default_option = MenuOptions.TypeEntry
 
@@ -1468,6 +1473,7 @@ def run():
 def main():
     parser = argparse.ArgumentParser('keepmenu')
     parser.add_argument('--type-password', action='store_true', default='False', dest='type_password')
+    parser.add_argument('--view-entry', action='store_true', default='False', dest='view_entry')
     args = parser.parse_args()
 
     try:
