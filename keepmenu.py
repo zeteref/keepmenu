@@ -3,6 +3,9 @@
 """Read and copy Keepass database entries using dmenu or rofi
 
 """
+import argparse
+import logging
+
 from contextlib import closing
 from enum import Enum
 import errno
@@ -38,7 +41,7 @@ if sys.version_info.major < 3:
 
 # pragma pylint: disable=ungrouped-imports,wrong-import-order,wrong-import-position
 from multiprocessing.managers import BaseManager
-from multiprocessing import Event, Process
+from multiprocessing import Event, Process, Queue
 # pragma pylint: enable=ungrouped-imports,wrong-import-order,wrong-import-position
 
 try:
@@ -46,6 +49,8 @@ try:
 except ImportError:
     import ConfigParser as configparser
 
+LOG = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 if sys.version_info.major < 3:
     str = unicode  # pylint: disable=undefined-variable, invalid-name, redefined-builtin
@@ -55,13 +60,29 @@ AUTH_FILE = expanduser("~/.cache/.keepmenu-auth")
 CONF_FILE = expanduser("~/.config/keepmenu/config.ini")
 
 class MenuOptions(Enum):
-    IndividualEntries = 0
+    ViewEntry = 0
     Edit = 1
     Add = 2
     ManageGroups = 3
     ReloadDB = 4
     KillDaemon = 5
     TypePassword = 6
+    TypeEntry = 7
+
+    def description(self):
+        return {
+           self.TypePassword:'Type password',
+           self.ViewEntry:'View Individual entry',
+           self.Edit:'Edit entries',
+           self.Add:'Add entry',
+           self.ManageGroups:'Manage groups',
+           self.ReloadDB:'Reload database',
+           self.KillDaemon:'Kill Keepmenu daemon',
+           self.TypeEntry:'Select entry to autotype',
+        }.get(self)
+
+    def __str__(self):
+        return self.description()
 
 def find_free_port():
     """Find random free port to use for BaseManager server
@@ -870,7 +891,7 @@ def view_all_entries(options, kp_entries):
                                                            na=num_align)
                                    for j, i in enumerate(kp_entries)]).encode(ENC)
     if options:
-        options_b = ("\n".join(options) + "\n").encode(ENC)
+        options_b = ("\n".join(map(str, options)) + "\n").encode(ENC)
         entries_b = options_b + kp_entries_b
     else:
         entries_b = kp_entries_b
@@ -1214,19 +1235,6 @@ def view_notes(notes):
     sel = dmenu_select(min(DMENU_LEN, len(notes_l)), inp=notes_b)
     return sel
 
-
-def client():
-    """Define client connection to server BaseManager
-
-    Returns: BaseManager object
-    """
-    port, auth = get_auth()
-    mgr = BaseManager(address=('', port), authkey=auth)
-    mgr.register('set_event')
-    mgr.connect()
-    return mgr
-
-
 class DmenuRunner(Process):
     """Listen for dmenu calling event and run keepmenu
 
@@ -1242,6 +1250,18 @@ class DmenuRunner(Process):
             self.server.kill_flag.set()
             sys.exit()
 
+        self.options = {
+            MenuOptions.TypePassword:self.type_password,
+            MenuOptions.TypeEntry:self.type_entry,
+            MenuOptions.ViewEntry:self.view_entry,
+            MenuOptions.Edit:self.edit_entry,
+            MenuOptions.Add:self.add_entry,
+            MenuOptions.ManageGroups:self.manage_groups,
+            MenuOptions.ReloadDB:self.reload_db,
+            MenuOptions.KillDaemon:self.kill_daemon
+        }
+
+
     def _set_timer(self):
         """Set inactivity timer
 
@@ -1252,29 +1272,28 @@ class DmenuRunner(Process):
 
     def run(self):
         while True:
-            self.server.start_flag.wait()
+            default_option = self.server.start_q.get()
             if self.server.kill_flag.is_set():
                 break
             if not self.kpo:
                 pass
             else:
-                self.dmenu_run()
+                self.dmenu_run(default_option)
             if self.server.cache_time_expired.is_set():
                 self.server.kill_flag.set()
             if self.server.kill_flag.is_set():
                 break
-            self.server.start_flag.clear()
 
     def cache_time(self):
         """Kill keepmenu daemon when cache timer expires
 
         """
         self.server.cache_time_expired.set()
-        if not self.server.start_flag.is_set():
+        if self.server.start_q.empty():
             self.server.kill_flag.set()
-            self.server.start_flag.set()
+            self.server.start_q.set()
 
-    def dmenu_run(self):  # pylint: disable=too-many-branches,too-many-return-statements
+    def dmenu_run(self, default_option):  # pylint: disable=too-many-branches,too-many-return-statements
         """Run dmenu with the given list of Keepass Entry objects
 
         If 'hide_groups' is defined in config.ini, hide those from main and
@@ -1294,16 +1313,85 @@ class DmenuRunner(Process):
             self.cache_timer.cancel()
         except AttributeError:
             pass
+
         self._set_timer()
-        options = {
-                   'Type password':MenuOptions.TypePassword,
-                   'View/Type Individual entries':MenuOptions.IndividualEntries,
-                   'Edit entries':MenuOptions.Edit,
-                   'Add entry':MenuOptions.Add,
-                   'Manage groups':MenuOptions.ManageGroups,
-                   'Reload database':MenuOptions.ReloadDB,
-                   'Kill Keepmenu daemon':MenuOptions.KillDaemon,
-                   }
+
+        opt_descriptions = [x for x in self.options.keys()]
+        selection = view_all_entries(opt_descriptions, self.get_visible_entries())
+
+        option = self.get_option(selection)
+
+        try:
+            if option:
+                option()
+            elif selection:
+                self.options[default_option](selection)
+        except (ValueError, TypeError):
+            return
+
+    def type_entry(self, sel=None):
+        if not sel:
+            sel = view_all_entries([], self.get_visible_entries())
+        entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+        type_entry(entry)
+
+    def type_password(self, sel=None):
+        if not sel:
+            sel = view_all_entries([], self.get_visible_entries())
+        entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+        type_text(entry.password)
+
+    def view_entry(self, *args):
+        sel = view_all_entries([], self.get_visible_entries())
+        entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+        text = view_entry(entry)
+        type_text(text)
+
+    def edit_entry(self, *args):
+        sel = view_all_entries([], self.kpo.entries)
+        entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+        edit = True
+
+        while edit is True:
+            edit = edit_entry(self.kpo, entry)
+
+        self.kpo.save()
+        self.kpo = get_entries(self.database)
+
+    def add_entry(self, *args):
+        entry = add_entry(self.kpo)
+
+        if entry:
+            self.kpo.save()
+            self.kpo = get_entries(self.database)
+
+    def manage_groups(self, *args):
+        group = manage_groups(self.kpo)
+
+        if group:
+            self.kpo.save()
+            self.kpo = get_entries(self.database)
+
+    def reload_db(self, *args):
+        self.kpo = get_entries(self.database)
+
+        if self.kpo:
+            self.dmenu_run(MenuOptions.TypeEntry)
+
+    def kill_daemon(self, *args):
+        try:
+            self.server.kill_flag.set()
+        except (EOFError, IOError):
+            return
+
+    def get_option(self, description):
+        menuoption = next((x for x in self.options if x.description() == description), None)
+        if menuoption:
+            return self.options[menuoption]
+        
+        return None
+
+    def get_hidden_groups(self):
         if CONF.has_option("database", "hide_groups"):
             hid_groups = CONF.get("database", "hide_groups").split("\n")
             # Validate ignored group names in config.ini
@@ -1311,72 +1399,13 @@ class DmenuRunner(Process):
                           [j.name for j in self.kpo.groups]]
         else:
             hid_groups = []
-        opt_descriptions = list(options.keys())
-        sel = view_all_entries(opt_descriptions, [i for i in self.kpo.entries if not
-                                         any(j in i.path.rstrip(i.title) for
-                                             j in hid_groups)])
 
+        return hid_groups
 
-
-        if not sel:
-            return
-        elif options.get(sel, None) == MenuOptions.TypePassword:
-            sel = view_all_entries([], [i for i in self.kpo.entries if not
-                                             any(j in i.path.rstrip(i.title) for
-                                                 j in hid_groups)])
-            try:
-                entry = self.kpo.entries[int(sel.split('-', 1)[0])]
-            except (ValueError, TypeError):
-                return
-            type_text(entry.password)
-        elif options.get(sel, None) == MenuOptions.IndividualEntries:  # ViewType Individual entries
-            sel = view_all_entries([], [i for i in self.kpo.entries if not
-                                             any(j in i.path.rstrip(i.title) for
-                                                 j in hid_groups)])
-            try:
-                entry = self.kpo.entries[int(sel.split('-', 1)[0])]
-            except (ValueError, TypeError):
-                return
-            text = view_entry(entry)
-            type_text(text)
-        elif options.get(sel, None) == MenuOptions.Edit:  # Edit entries
-            sel = view_all_entries([], self.kpo.entries)
-            try:
-                entry = self.kpo.entries[int(sel.split('-', 1)[0])]
-            except (ValueError, TypeError):
-                return
-            edit = True
-            while edit is True:
-                edit = edit_entry(self.kpo, entry)
-            self.kpo.save()
-            self.kpo = get_entries(self.database)
-        elif options.get(sel, None) == MenuOptions.Add:  # Add entry
-            entry = add_entry(self.kpo)
-            if entry:
-                self.kpo.save()
-                self.kpo = get_entries(self.database)
-        elif options.get(sel, None) == MenuOptions.ManageGroups:  # Manage groups
-            group = manage_groups(self.kpo)
-            if group:
-                self.kpo.save()
-                self.kpo = get_entries(self.database)
-        elif options.get(sel, None) == MenuOptions.ReloadDB:  # Reload database
-            self.kpo = get_entries(self.database)
-            if not self.kpo:
-                return
-            self.dmenu_run()
-        elif options.get(sel, None) == MenuOptions.KillDaemon:  # Kill keepmenu daemon
-            try:
-                self.server.kill_flag.set()
-            except (EOFError, IOError):
-                return
-        else:
-            try:
-                entry = self.kpo.entries[int(sel.split('-', 1)[0])]
-            except (ValueError, TypeError):
-                return
-            type_entry(entry)
-
+    def get_visible_entries(self):
+        return [i for i in self.kpo.entries 
+                if not any(j in i.path.rstrip(i.title) 
+                           for j in self.get_hidden_groups())]
 
 class Server(Process):
     """Run BaseManager server to listen for dmenu calling events
@@ -1385,10 +1414,9 @@ class Server(Process):
     def __init__(self):
         Process.__init__(self)
         self.port, self.authkey = get_auth()
-        self.start_flag = Event()
+        self.start_q = Queue()
         self.kill_flag = Event()
         self.cache_time_expired = Event()
-        self.start_flag.set()
 
     def run(self):
         serv = self.server()  # pylint: disable=unused-variable
@@ -1400,9 +1428,30 @@ class Server(Process):
         """
         mgr = BaseManager(address=('127.0.0.1', self.port),
                           authkey=self.authkey)
-        mgr.register('set_event', callable=self.start_flag.set)
+        mgr.register('set_event', callable=self.show_dmenu)
         mgr.start()
         return mgr
+
+
+    def show_dmenu(self, args=None):
+        if args and args.type_password == True:
+            default_option = MenuOptions.TypePassword
+        else:
+            default_option = MenuOptions.TypeEntry
+
+        self.start_q.put(default_option)
+
+
+def client():
+    """Define client connection to server BaseManager
+
+    Returns: BaseManager object
+    """
+    port, auth = get_auth()
+    mgr = BaseManager(address=('', port), authkey=auth)
+    mgr.register('set_event')
+    mgr.connect()
+    return mgr
 
 
 def run():
@@ -1420,12 +1469,13 @@ def run():
 
 
 def main():
-    if len(sys.argv) > 1:
-        print("See `man keepmenu` for help")
-        sys.exit()
+    parser = argparse.ArgumentParser('keepmenu')
+    parser.add_argument('--type-password', action='store_true', default='False', dest='type_password')
+    args = parser.parse_args()
+
     try:
         MANAGER = client()
-        MANAGER.set_event()  # pylint: disable=no-member
+        MANAGER.set_event(args)  # pylint: disable=no-member
     except socket.error:  ## Use socket.error for Python 2 & 3 compat.
         process_config()
         run()
