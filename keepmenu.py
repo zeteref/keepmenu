@@ -1326,6 +1326,7 @@ class DmenuRunner(Process):
             elif selection:
                 self.options[default_option](selection)
         except (ValueError, TypeError):
+            LOG.exception('unexpected error')
             return
 
     def type_entry(self, sel=None):
@@ -1456,7 +1457,7 @@ def client():
     return mgr
 
 
-def run():
+def run(args):
     """Main entrypoint. Start the background Manager and Dmenu runner processes.
 
     """
@@ -1465,6 +1466,8 @@ def run():
     dmenu.daemon = True
     server.start()
     dmenu.start()
+    server.show_dmenu(args)
+
     server.join()
     if exists(expanduser(AUTH_FILE)):
         os.remove(expanduser(AUTH_FILE))
@@ -1481,7 +1484,7 @@ def main():
         MANAGER.set_event(args)  # pylint: disable=no-member
     except socket.error:  ## Use socket.error for Python 2 & 3 compat.
         process_config()
-        run()
+        run(args)
 
 if __name__ == '__main__':
     main()
