@@ -1429,7 +1429,7 @@ class Server(Process):
         """
         mgr = BaseManager(address=('127.0.0.1', self.port),
                           authkey=self.authkey)
-        mgr.register('set_event', callable=self.show_dmenu)
+        mgr.register('show_dmenu', callable=self.show_dmenu)
         mgr.start()
         return mgr
 
@@ -1452,12 +1452,12 @@ def client():
     """
     port, auth = get_auth()
     mgr = BaseManager(address=('', port), authkey=auth)
-    mgr.register('set_event')
+    mgr.register('show_dmenu')
     mgr.connect()
     return mgr
 
 
-def run(args):
+def start_server(args):
     """Main entrypoint. Start the background Manager and Dmenu runner processes.
 
     """
@@ -1481,10 +1481,10 @@ def main():
 
     try:
         MANAGER = client()
-        MANAGER.set_event(args)  # pylint: disable=no-member
+        MANAGER.show_dmenu(args)  # pylint: disable=no-member
     except socket.error:  ## Use socket.error for Python 2 & 3 compat.
         process_config()
-        run(args)
+        start_server(args)
 
 if __name__ == '__main__':
     main()
