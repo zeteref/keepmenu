@@ -1394,7 +1394,7 @@ class DmenuRunner(Process):
 
     def get_hidden_groups(self):
         if CONF.has_option("database", "hide_groups"):
-            hid_groups = CONF.get("database", "hide_groups").split("\n")
+            hid_groups = CONF.get("database", "hide_groups").split(",")
             # Validate ignored group names in config.ini
             hid_groups = [i for i in hid_groups if i in
                           [j.name for j in self.kpo.groups]]
