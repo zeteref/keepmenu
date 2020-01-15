@@ -871,28 +871,20 @@ def type_text(data):
                       "Try setting `type_library = xdotool` in config.ini")
 
 
-def view_all_entries(options, kp_entries):
+def view_all_entries(options, entries_descriptions):
     """Generate numbered list of all Keepass entries and open with dmenu.
 
     Returns: dmenu selection
 
     """
-    num_align = len(str(len(kp_entries)))
-    # Note: remember str converts to a unicode string for python 2
-    kp_entry_pattern = str("{:>{na}} - {} - {} - {}")  # Path,username,url
-    # Have to number each entry to capture duplicates correctly
-    kp_entries_b = str("\n").join([kp_entry_pattern.format(j,
-                                                           i.path,
-                                                           i.username,
-                                                           i.url,
-                                                           na=num_align)
-                                   for j, i in enumerate(kp_entries)]).encode(ENC)
+
+    kp_entries_b = str("\n").join(entries_descriptions).encode(ENC)
     if options:
         options_b = ("\n".join(map(str, options)) + "\n").encode(ENC)
         entries_b = options_b + kp_entries_b
     else:
         entries_b = kp_entries_b
-    return dmenu_select(min(DMENU_LEN, len(options) + len(kp_entries)), inp=entries_b)
+    return dmenu_select(min(DMENU_LEN, len(options) + len(entries_descriptions)), inp=entries_b)
 
 
 def select_group(kpo, prompt="Groups"):
@@ -1314,7 +1306,7 @@ class DmenuRunner(Process):
         self._set_timer()
 
         opt_descriptions = [x.description() for x in self.options.keys()]
-        selection = view_all_entries(opt_descriptions, self.get_visible_entries())
+        selection = view_all_entries(opt_descriptions, self.get_entries_descriptions())
 
         option = self.get_option(selection)
 
@@ -1331,26 +1323,26 @@ class DmenuRunner(Process):
 
     def type_entry(self, sel=None):
         if not sel:
-            sel = view_all_entries([], self.get_visible_entries())
-        entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+            sel = view_all_entries([], self.get_entries_descriptions())
+        entry = self.get_selected_entry(sel)
         type_entry(entry)
 
     def type_password(self, sel=None):
         if not sel:
-            sel = view_all_entries([], self.get_visible_entries())
-        entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+            sel = view_all_entries([], self.get_entries_descriptions())
+        entry = self.get_selected_entry(sel)
         type_text(entry.password)
 
     def view_entry(self, sel=None):
         if not sel:
-            sel = view_all_entries([], self.get_visible_entries())
-        entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+            sel = view_all_entries([], self.get_entries_descriptions())
+        entry = self.get_selected_entry(sel)
         text = view_entry(entry)
         type_text(text)
 
     def edit_entry(self):
-        sel = view_all_entries([], self.kpo.entries)
-        entry = self.kpo.entries[int(sel.split('-', 1)[0])]
+        sel = view_all_entries([], self.get_entries_descriptions(include_hidden=True))
+        entry = self.get_selected_entry(sel)
         edit = True
 
         while edit is True:
@@ -1392,6 +1384,38 @@ class DmenuRunner(Process):
         
         return None
 
+    def get_entries_descriptions(self, *, include_hidden=False):
+        return EntrySelector(self.kpo).get_entries_descriptions(include_hidden=include_hidden)
+
+    def get_selected_entry(self, selection):
+        return EntrySelector(self.kpo).get_selected_entry(selection)
+
+class EntrySelector:
+    def __init__(self, kpo):
+        self.kpo = kpo
+
+    def get_entries_descriptions(self, *, include_hidden=False):
+        ia = len(str(len(self.kpo.entries))) # idx padding in description
+
+        if include_hidden:
+            return [self.entry2text(i, ia, e) 
+                    for i, e in enumerate(self.kpo.entries)]
+
+        return [self.entry2text(i, ia, e) for i, e in enumerate(self.kpo.entries)
+                if not any(j in e.path.rstrip(e.title)
+                           for j in self.get_hidden_groups())]
+
+    def get_selected_entry(self, text):
+        return self.kpo.entries[self.text2idx(text)]
+
+    def entry2text(self, idx, idx_align, e):
+        "return text used to select entry"
+        return f'{idx:>{idx_align}} - {e.path} - {e.username} - {e.url}'
+
+    def text2idx(self, description):
+        "extract entry idx from text used to select entry"
+        return int(description.split('-', 1)[0])
+
     def get_hidden_groups(self):
         if CONF.has_option("database", "hide_groups"):
             hid_groups = CONF.get("database", "hide_groups").split(",")
@@ -1402,11 +1426,6 @@ class DmenuRunner(Process):
             hid_groups = []
 
         return hid_groups
-
-    def get_visible_entries(self):
-        return [i for i in self.kpo.entries 
-                if not any(j in i.path.rstrip(i.title) 
-                           for j in self.get_hidden_groups())]
 
 class Server(Process):
     """Run BaseManager server to listen for dmenu calling events
