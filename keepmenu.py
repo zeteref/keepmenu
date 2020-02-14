@@ -3,6 +3,7 @@
 """Read and copy Keepass database entries using dmenu or rofi
 
 """
+import configparser
 import argparse
 import logging
 
@@ -12,7 +13,8 @@ import errno
 import re
 import itertools
 import locale
-from multiprocessing import managers  # pylint: disable=unused-import
+from multiprocessing import Event, Process, Queue
+from multiprocessing.managers import BaseManager
 import os
 from os.path import exists, expanduser
 import random
@@ -30,31 +32,9 @@ import construct
 from pykeyboard import PyKeyboard
 from pymouse.x11 import X11Error
 from pykeepass import PyKeePass
-if sys.version_info.major < 3:
-    # hack to reduce client connect timeout for python 2.7 (defaults to 20 seconds)
-    # https://stackoverflow.com/questions/6512884/properly-disconnect-multiprocessing-remote-manager#9936835
-    def _new_init_timeout():
-        return time.time() + 0.1
-    # pragma pylint: disable=protected-access,line-too-long
-    sys.modules['multiprocessing'].__dict__['managers'].__dict__['connection']._init_timeout = _new_init_timeout
-    # pragma pylint: enable=protected-access,line-too-long
-
-# pragma pylint: disable=ungrouped-imports,wrong-import-order,wrong-import-position
-from multiprocessing.managers import BaseManager
-from multiprocessing import Event, Process, Queue
-# pragma pylint: enable=ungrouped-imports,wrong-import-order,wrong-import-position
-
-try:
-    import configparser
-except ImportError:
-    import ConfigParser as configparser
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
-
-if sys.version_info.major < 3:
-    str = unicode  # pylint: disable=undefined-variable, invalid-name, redefined-builtin
-
 
 AUTH_FILE = expanduser("~/.cache/.keepmenu-auth")
 CONF_FILE = expanduser("~/.config/keepmenu/config.ini")
@@ -1506,7 +1486,7 @@ def main():
     try:
         MANAGER = client()
         MANAGER.show_dmenu(args)  # pylint: disable=no-member
-    except socket.error:  ## Use socket.error for Python 2 & 3 compat.
+    except socket.error:
         process_config()
         start_server(args)
 
