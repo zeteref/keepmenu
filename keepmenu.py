@@ -1394,23 +1394,28 @@ class EntrySelector:
     def __init__(self, kpo):
         self.kpo = kpo
 
+        # idx padding in description
+        self.idx_align = len(str(len(self.kpo.entries)))
+
     def get_entries_descriptions(self, *, include_hidden=False):
-        ia = len(str(len(self.kpo.entries))) # idx padding in description
-
         if include_hidden:
-            return [self.entry2text(i, ia, e) 
-                    for i, e in enumerate(self.kpo.entries)]
+            return [self.entry2text(idx, entry) 
+                    for idx, entry in enumerate(self.kpo.entries)]
 
-        return [self.entry2text(i, ia, e) for i, e in enumerate(self.kpo.entries)
-                if not any(j in e.path.rstrip(e.title)
-                           for j in self.get_hidden_groups())]
+        return [self.entry2text(idx, entry) 
+                for idx, entry in enumerate(self.kpo.entries)
+                if not self.is_hidden(entry)]
+
+    def is_hidden(self, entry):
+        entry_group = entry.path.rstrip(entry.title)
+        return any(group in entry_group for group in self.get_hidden_groups())
 
     def get_selected_entry(self, text):
         return self.kpo.entries[self.text2idx(text)]
 
-    def entry2text(self, idx, idx_align, e):
+    def entry2text(self, idx, e):
         "return text used to select entry"
-        return f'{idx:>{idx_align}} - {e.path} - {e.username} - {e.url}'
+        return f'{idx:>{self.idx_align}} - {e.path} - {e.username} - {e.url}'
 
     def text2idx(self, description):
         "extract entry idx from text used to select entry"
