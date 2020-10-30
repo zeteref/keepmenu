@@ -48,6 +48,7 @@ class MenuOptions(Enum):
     KillDaemon = 5
     TypePassword = 6
     TypeEntry = 7
+    TypeUsername = 8
 
     def description(self):
         return {
@@ -1221,6 +1222,7 @@ class DmenuRunner(Process):
 
         self.options = {
             MenuOptions.TypePassword:self.type_password,
+            MenuOptions.TypeUsername:self.type_username,
             MenuOptions.TypeEntry:self.type_entry,
             MenuOptions.ViewEntry:self.view_entry,
             MenuOptions.Edit:self.edit_entry,
@@ -1312,6 +1314,12 @@ class DmenuRunner(Process):
             sel = view_all_entries([], self.get_entries_descriptions())
         entry = self.get_selected_entry(sel)
         type_text(entry.password)
+
+    def type_username(self, sel=None):
+        if not sel:
+            sel = view_all_entries([], self.get_entries_descriptions())
+        entry = self.get_selected_entry(sel)
+        type_text(entry.username)
 
     def view_entry(self, sel=None):
         if not sel:
@@ -1443,6 +1451,8 @@ class Server(Process):
             default_option = MenuOptions.TypePassword
         elif args.view_entry == True:
             default_option = MenuOptions.ViewEntry
+        elif args.type_username == True:
+            default_option = MenuOptions.TypeUsername
         else:
             default_option = MenuOptions.TypeEntry
 
@@ -1481,6 +1491,7 @@ def main():
     parser = argparse.ArgumentParser('keepmenu')
     parser.add_argument('--type-password', action='store_true', default='False', dest='type_password')
     parser.add_argument('--view-entry', action='store_true', default='False', dest='view_entry')
+    parser.add_argument('--type-username', action='store_true', default='False', dest='type_username')
     args = parser.parse_args()
 
     try:
