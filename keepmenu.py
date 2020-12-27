@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # encoding:utf8
 """Read and copy Keepass database entries using dmenu or rofi
 
@@ -29,12 +29,22 @@ import time
 import re
 import webbrowser
 import construct
-from pykeyboard import PyKeyboard
-from pymouse.x11 import X11Error
+from pynput import keyboard
 from pykeepass import PyKeePass
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+try:
+    # secrets only available python 3.6+
+    from secrets import choice
+except ImportError:
+    def choice(seq):
+        """Provide `choice` function call for pw generation
+
+        """
+        return random.SystemRandom().choice(seq)
+
 
 AUTH_FILE = expanduser("~/.cache/.keepmenu-auth")
 CONF_FILE = expanduser("~/.config/keepmenu/config.ini")
@@ -83,28 +93,28 @@ def random_str():
     return ''.join(random.choice(letters) for i in range(15))
 
 
-def gen_passwd(length=20, use_digits=True, use_spec_chars=True):
-    """Generate password (min 4 chars, 1 lower, 1 upper, 1 digit, 1 special char)
+def gen_passwd(chars, length=20):
+    """Generate password (min = # of distinct character sets picked)
 
-    Args: length - int (default 20)
-          use_digits - bool (default True)
-          use_spec_chars - bool (default True)
+    Args: chars - Dict {preset_name_1: {char_set_1: string, char_set_2: string},
+                        preset_name_2: ....}
+          length - int (default 20)
 
-    Returns: password - string
+    Returns: password - string OR False
 
     """
-    length = length if length >= 4 else 4
-    dig = string.digits if use_digits is True else ''
-    spec = string.punctuation if use_spec_chars is True else ''
-    alphabet = string.ascii_letters + dig + spec
-    while True:
-        password = ''.join(random.SystemRandom().choice(alphabet) for i in range(length))
-        if (any(c.islower() for c in password)
-                and any(c.isupper() for c in password)
-                and (any(c.isdigit() for c in password) if dig else True)
-                and (any(c in string.punctuation for c in password) if spec else True)):
-            break
-    return password
+    sets = set()
+    if chars:
+        sets = set(j for i in chars.values() for j in i.values())
+    if length < len(sets) or not chars:
+        return False
+    alphabet = "".join(set("".join(j for j in i.values()) for i in chars.values()))
+    # Ensure minimum of one char from each character set
+    password = "".join(choice(k) for k in sets)
+    password += "".join(choice(alphabet) for i in range(length - len(sets)))
+    tpw = list(password)
+    random.shuffle(tpw)
+    return "".join(tpw)
 
 
 def process_config():
@@ -114,12 +124,12 @@ def process_config():
     """
     # pragma pylint: disable=global-variable-undefined
     global CACHE_PERIOD_MIN, \
-           CACHE_PERIOD_DEFAULT_MIN, \
-           CONF, \
-           DMENU_LEN, \
-           ENV, \
-           ENC, \
-           SEQUENCE
+        CACHE_PERIOD_DEFAULT_MIN, \
+        CONF, \
+        DMENU_LEN, \
+        ENV, \
+        ENC, \
+        SEQUENCE
     # pragma pylint: enable=global-variable-undefined
     ENV = os.environ.copy()
     ENV['LC_ALL'] = 'C'
@@ -185,14 +195,21 @@ def get_auth():
     """
     auth = configparser.ConfigParser()
     if not exists(AUTH_FILE):
-        with open(AUTH_FILE, 'w') as a_file:
+        fd = os.open(AUTH_FILE, os.O_WRONLY | os.O_CREAT, 0o600)
+        with open(fd, 'w') as a_file:
             auth.set('DEFAULT', 'port', str(find_free_port()))
             auth.set('DEFAULT', 'authkey', random_str())
             auth.write(a_file)
-    auth.read(AUTH_FILE)
-    port = int(auth.get('DEFAULT', 'port'))
-    authkey = auth.get('DEFAULT', 'authkey').encode()
-    return port, authkey
+    try:
+        auth.read(AUTH_FILE)
+        port = auth.get('DEFAULT', 'port')
+        authkey = auth.get('DEFAULT', 'authkey').encode()
+    except (configparser.NoOptionError, configparser.MissingSectionHeaderError):
+        os.remove(AUTH_FILE)
+        print("Cache file was corrupted. Stopping all instances. Please try again")
+        call(["pkill", "keepmenu"])  # Kill all prior instances as well
+        return None, None
+    return int(port), authkey
 
 
 def dmenu_cmd(num_lines, prompt):
@@ -212,7 +229,7 @@ def dmenu_cmd(num_lines, prompt):
     dmenu_command = command[0]
     dmenu_args = command[1:]
     del args_dict["dmenu_command"]
-    lines = "-i -dmenu -lines" if "rofi" in dmenu_command else "-i -l"
+    lines = "-i -dmenu -multi-select -lines" if "rofi" in dmenu_command else "-i -l"
     if "l" in args_dict:
         lines = "{} {}".format(lines, min(num_lines, int(args_dict['l'])))
         del args_dict['l']
@@ -259,7 +276,7 @@ def dmenu_select(num_lines, prompt="Entries", inp=""):
         cmd = [cmd[0]] + ["-dmenu"] if "rofi" in cmd[0] else [""]
         Popen(cmd[0], stdin=PIPE, stdout=PIPE, env=ENV).communicate(input=err)
         sys.exit()
-    if sel:
+    if sel is not None:
         sel = sel.decode(ENC).rstrip('\n')
     return sel
 
@@ -269,6 +286,43 @@ def dmenu_err(prompt):
 
     """
     return dmenu_select(1, prompt)
+
+
+def get_password_chars():
+    """Get characters to use for password generation from defaults, config file
+    and user input.
+
+    Returns: Dict {preset_name_1: {char_set_1: string, char_set_2: string},
+                   preset_name_2: ....}
+    """
+    chars = {"upper": string.ascii_uppercase,
+             "lower": string.ascii_lowercase,
+             "digits": string.digits,
+             "punctuation": string.punctuation}
+    presets = {}
+    presets["Letters+Digits+Punctuation"] = chars
+    presets["Letters+Digits"] = {k: chars[k] for k in ("upper", "lower", "digits")}
+    presets["Letters"] = {k: chars[k] for k in ("upper", "lower")}
+    presets["Digits"] = {k: chars[k] for k in ("digits",)}
+    if CONF.has_section('password_chars'):
+        pw_chars = dict(CONF.items('password_chars'))
+        chars.update(pw_chars)
+        for key, val in pw_chars.items():
+            presets[key.title()] = {k: chars[k] for k in (key,)}
+    if CONF.has_section('password_char_presets'):
+        if CONF.options('password_char_presets'):
+            presets = {}
+        for name, val in CONF.items('password_char_presets'):
+            try:
+                presets[name.title()] = {k: chars[k] for k in shlex.split(val)}
+            except KeyError:
+                print("Error: Unknown value in preset {}. Ignoring.".format(name))
+                continue
+    input_b = "\n".join(presets).encode(ENC)
+    char_sel = dmenu_select(len(presets),
+                            "Pick character set(s) to use", inp=input_b)
+    # This dictionary return also handles Rofi multiple select
+    return {k: presets[k] for k in char_sel.split('\n')} if char_sel else False
 
 
 def get_database():
@@ -386,14 +440,16 @@ def get_passphrase():
         password = ""
         out = Popen(pinentry,
                     stdout=PIPE,
-                    stdin=PIPE).communicate( \
-                            input=b'setdesc Enter database password\ngetpin\n')[0]
+                    stdin=PIPE).communicate(
+                        input=b'setdesc Enter database password\ngetpin\n')[0]
         if out:
             res = out.decode(ENC).split("\n")[2]
             if res.startswith("D "):
                 password = res.split("D ")[1]
     else:
         password = dmenu_select(0, "Passphrase")
+        if not password:
+            sys.exit()
     return password
 
 
@@ -422,7 +478,7 @@ def tokenize_autotype(autotype):
 
         if autotype[opening_idx] in "+^%~@":
             yield autotype[opening_idx], True
-            autotype = autotype[opening_idx+1:]
+            autotype = autotype[opening_idx + 1:]
             continue
 
         closing_idx = autotype.find('}')
@@ -433,12 +489,11 @@ def tokenize_autotype(autotype):
         if closing_idx == opening_idx + 1 and closing_idx + 1 < len(autotype) \
                 and autotype[closing_idx + 1] == '}':
             yield "{}}", True
-            autotype = autotype[closing_idx+2:]
+            autotype = autotype[closing_idx + 2:]
             continue
-        else:
-            yield autotype[opening_idx:closing_idx+1], True
+        yield autotype[opening_idx:closing_idx + 1], True
+        autotype = autotype[closing_idx + 1:]
 
-        autotype = autotype[closing_idx+1:]
 
 def token_command(token):
     """When token denotes a special command, this function provides a callable
@@ -448,7 +503,7 @@ def token_command(token):
     cmd = None
 
     def _check_delay():
-        match = re.match('{DELAY (\d+)}', token)
+        match = re.match(r'{DELAY (\d+)}', token)
         if match:
             delay = match.group(1)
             nonlocal cmd
@@ -460,10 +515,11 @@ def token_command(token):
         return cmd
     return None
 
+
 def type_entry(entry):
     """Pick which library to use to type strings
 
-    Defaults to pyuserinput
+    Defaults to pynput
 
     """
     sequence = SEQUENCE
@@ -476,7 +532,7 @@ def type_entry(entry):
         sequence = entry.autotype_sequence
     tokens = tokenize_autotype(sequence)
 
-    library = 'pyuserinput'
+    library = 'pynput'
     if CONF.has_option('database', 'type_library'):
         library = CONF.get('database', 'type_library')
     if library == 'xdotool':
@@ -484,7 +540,7 @@ def type_entry(entry):
     elif library == 'ydotool':
         type_entry_ydotool(entry, tokens)
     else:
-        type_entry_pyuserinput(entry, tokens)
+        type_entry_pynput(entry, tokens)
 
 
 PLACEHOLDER_AUTOTYPE_TOKENS = {
@@ -517,79 +573,79 @@ STRING_AUTOTYPE_TOKENS = {
     "{}}"         : '}',
 }
 
-PYUSERINPUT_AUTOTYPE_TOKENS = {
-    "{TAB}"       : lambda kbd: kbd.tab_key,
-    "{ENTER}"     : lambda kbd: kbd.return_key,
-    "~"           : lambda kbd: kbd.return_key,
-    "{UP}"        : lambda kbd: kbd.up_key,
-    "{DOWN}"      : lambda kbd: kbd.down_key,
-    "{LEFT}"      : lambda kbd: kbd.left_key,
-    "{RIGHT}"     : lambda kbd: kbd.right_key,
-    "{INSERT}"    : lambda kbd: kbd.insert_key,
-    "{INS}"       : lambda kbd: kbd.insert_key,
-    "{DELETE}"    : lambda kbd: kbd.delete_key,
-    "{DEL}"       : lambda kbd: kbd.delete_key,
-    "{HOME}"      : lambda kbd: kbd.home_key,
-    "{END}"       : lambda kbd: kbd.end_key,
-    "{PGUP}"      : lambda kbd: kbd.page_up_key,
-    "{PGDN}"      : lambda kbd: kbd.page_down_key,
-    "{SPACE}"     : lambda kbd: kbd.space_key,
-    "{BACKSPACE}" : lambda kbd: kbd.backspace_key,
-    "{BS}"        : lambda kbd: kbd.backspace_key,
-    "{BKSP}"      : lambda kbd: kbd.backspace_key,
-    "{BREAK}"     : lambda kbd: kbd.break_key,
-    "{CAPSLOCK}"  : lambda kbd: kbd.caps_lock_key,
-    "{ESC}"       : lambda kbd: kbd.escape_key,
-    "{WIN}"       : lambda kbd: kbd.windows_l_key,
-    "{LWIN}"      : lambda kbd: kbd.windows_l_key,
-    "{RWIN}"      : lambda kbd: kbd.windows_r_key,
-    "{APPS}"      : lambda kbd: kbd.apps_key,
-    "{HELP}"      : lambda kbd: kbd.help_key,
-    "{NUMLOCK}"   : lambda kbd: kbd.num_lock_key,
-    "{PRTSC}"     : lambda kbd: kbd.print_screen_key,
-    "{SCROLLLOCK}": lambda kbd: kbd.scroll_lock_key,
-    "{F1}"        : lambda kbd: kbd.function_keys[1],
-    "{F2}"        : lambda kbd: kbd.function_keys[2],
-    "{F3}"        : lambda kbd: kbd.function_keys[3],
-    "{F4}"        : lambda kbd: kbd.function_keys[4],
-    "{F5}"        : lambda kbd: kbd.function_keys[5],
-    "{F6}"        : lambda kbd: kbd.function_keys[6],
-    "{F7}"        : lambda kbd: kbd.function_keys[7],
-    "{F8}"        : lambda kbd: kbd.function_keys[8],
-    "{F9}"        : lambda kbd: kbd.function_keys[9],
-    "{F10}"       : lambda kbd: kbd.function_keys[10],
-    "{F11}"       : lambda kbd: kbd.function_keys[11],
-    "{F12}"       : lambda kbd: kbd.function_keys[12],
-    "{F13}"       : lambda kbd: kbd.function_keys[13],
-    "{F14}"       : lambda kbd: kbd.function_keys[14],
-    "{F15}"       : lambda kbd: kbd.function_keys[15],
-    "{F16}"       : lambda kbd: kbd.function_keys[16],
-    "{ADD}"       : lambda kbd: kbd.numpad_keys['Add'],
-    "{SUBTRACT}"  : lambda kbd: kbd.numpad_keys['Subtract'],
-    "{MULTIPLY}"  : lambda kbd: kbd.numpad_keys['Multiply'],
-    "{DIVIDE}"    : lambda kbd: kbd.numpad_keys['Divide'],
-    "{NUMPAD0}"   : lambda kbd: kbd.numpad_keys['0'],
-    "{NUMPAD1}"   : lambda kbd: kbd.numpad_keys['1'],
-    "{NUMPAD2}"   : lambda kbd: kbd.numpad_keys['2'],
-    "{NUMPAD3}"   : lambda kbd: kbd.numpad_keys['3'],
-    "{NUMPAD4}"   : lambda kbd: kbd.numpad_keys['4'],
-    "{NUMPAD5}"   : lambda kbd: kbd.numpad_keys['5'],
-    "{NUMPAD6}"   : lambda kbd: kbd.numpad_keys['6'],
-    "{NUMPAD7}"   : lambda kbd: kbd.numpad_keys['7'],
-    "{NUMPAD8}"   : lambda kbd: kbd.numpad_keys['8'],
-    "{NUMPAD9}"   : lambda kbd: kbd.numpad_keys['9'],
-    "+"           : lambda kbd: kbd.shift_key,
-    "^"           : lambda kbd: kbd.control_key,
-    "%"           : lambda kbd: kbd.alt_key,
-    "@"           : lambda kbd: kbd.windows_l_key,
+PYNPUT_AUTOTYPE_TOKENS = {
+    "{TAB}"       : keyboard.Key.tab,
+    "{ENTER}"     : keyboard.Key.enter,
+    "~"           : keyboard.Key.enter,
+    "{UP}"        : keyboard.Key.up,
+    "{DOWN}"      : keyboard.Key.down,
+    "{LEFT}"      : keyboard.Key.left,
+    "{RIGHT}"     : keyboard.Key.right,
+    "{INSERT}"    : keyboard.Key.insert,
+    "{INS}"       : keyboard.Key.insert,
+    "{DELETE}"    : keyboard.Key.delete,
+    "{DEL}"       : keyboard.Key.delete,
+    "{HOME}"      : keyboard.Key.home,
+    "{END}"       : keyboard.Key.end,
+    "{PGUP}"      : keyboard.Key.page_up,
+    "{PGDN}"      : keyboard.Key.page_down,
+    "{SPACE}"     : keyboard.Key.space,
+    "{BACKSPACE}" : keyboard.Key.backspace,
+    "{BS}"        : keyboard.Key.backspace,
+    "{BKSP}"      : keyboard.Key.backspace,
+    "{BREAK}"     : keyboard.Key.pause,
+    "{CAPSLOCK}"  : keyboard.Key.caps_lock,
+    "{ESC}"       : keyboard.Key.esc,
+    "{WIN}"       : keyboard.Key.cmd,
+    "{LWIN}"      : keyboard.Key.cmd_l,
+    "{RWIN}"      : keyboard.Key.cmd_r,
+    # "{APPS}"    : keyboard.Key.
+    # "{HELP}"    : keyboard.Key.
+    "{NUMLOCK}"   : keyboard.Key.num_lock,
+    "{PRTSC}"     : keyboard.Key.print_screen,
+    "{SCROLLLOCK}": keyboard.Key.scroll_lock,
+    "{F1}"        : keyboard.Key.f1,
+    "{F2}"        : keyboard.Key.f2,
+    "{F3}"        : keyboard.Key.f3,
+    "{F4}"        : keyboard.Key.f4,
+    "{F5}"        : keyboard.Key.f5,
+    "{F6}"        : keyboard.Key.f6,
+    "{F7}"        : keyboard.Key.f7,
+    "{F8}"        : keyboard.Key.f8,
+    "{F9}"        : keyboard.Key.f9,
+    "{F10}"       : keyboard.Key.f10,
+    "{F11}"       : keyboard.Key.f11,
+    "{F12}"       : keyboard.Key.f12,
+    "{F13}"       : keyboard.Key.f13,
+    "{F14}"       : keyboard.Key.f14,
+    "{F15}"       : keyboard.Key.f15,
+    "{F16}"       : keyboard.Key.f16,
+    # "{ADD}"       : keyboard.Key.
+    # "{SUBTRACT}"  : keyboard.Key.
+    # "{MULTIPLY}"  : keyboard.Key.
+    # "{DIVIDE}"    : keyboard.Key.
+    # "{NUMPAD0}"   : keyboard.Key.
+    # "{NUMPAD1}"   : keyboard.Key.
+    # "{NUMPAD2}"   : keyboard.Key.
+    # "{NUMPAD3}"   : keyboard.Key.
+    # "{NUMPAD4}"   : keyboard.Key.
+    # "{NUMPAD5}"   : keyboard.Key.
+    # "{NUMPAD6}"   : keyboard.Key.
+    # "{NUMPAD7}"   : keyboard.Key.
+    # "{NUMPAD8}"   : keyboard.Key.
+    # "{NUMPAD9}"   : keyboard.Key.
+    "+"           : keyboard.Key.shift,
+    "^"           : keyboard.Key.ctrl,
+    "%"           : keyboard.Key.alt,
+    "@"           : keyboard.Key.cmd,
 }
 
 
-def type_entry_pyuserinput(entry, tokens):
-    """Use PyUserInput to auto-type the selected entry
+def type_entry_pynput(entry, tokens):
+    """Use pynput to auto-type the selected entry
 
     """
-    kbd = PyKeyboard()
+    kbd = keyboard.Controller()
     enter_idx = True
     for token, special in tokens:
         if special:
@@ -600,34 +656,34 @@ def type_entry_pyuserinput(entry, tokens):
                 to_type = PLACEHOLDER_AUTOTYPE_TOKENS[token](entry)
                 if to_type:
                     try:
-                        kbd.type_string(to_type)
-                    except (X11Error, KeyError):
+                        kbd.type(to_type)
+                    except kbd.InvalidCharacterException:
                         dmenu_err("Unable to type string...bad character.\n"
                                   "Try setting `type_library = xdotool` in config.ini")
                         return
             elif token in STRING_AUTOTYPE_TOKENS:
                 to_type = STRING_AUTOTYPE_TOKENS[token]
                 try:
-                    kbd.type_string(to_type)
-                except (X11Error, KeyError):
+                    kbd.type(to_type)
+                except kbd.InvalidCharacterException:
                     dmenu_err("Unable to type string...bad character.\n"
                               "Try setting `type_library = xdotool` in config.ini")
                     return
-            elif token in PYUSERINPUT_AUTOTYPE_TOKENS:
-                to_tap = PYUSERINPUT_AUTOTYPE_TOKENS[token](kbd)
-                kbd.tap_key(to_tap)
+            elif token in PYNPUT_AUTOTYPE_TOKENS:
+                to_tap = PYNPUT_AUTOTYPE_TOKENS[token]
+                kbd.tap(to_tap)
                 # Add extra {ENTER} key tap for first instance of {ENTER}. It
                 # doesn't get recognized for some reason.
                 if enter_idx is True and token in ("{ENTER}", "~"):
-                    kbd.tap_key(to_tap)
+                    kbd.tap(to_tap)
                     enter_idx = False
             else:
-                dmenu_err("Unsupported auto-type token (pyuserinput): \"%s\"" % (token))
+                dmenu_err("Unsupported auto-type token (pynput): \"%s\"" % (token))
                 return
         else:
             try:
-                kbd.type_string(token)
-            except (X11Error, KeyError):
+                kbd.type(token)
+            except kbd.InvalidCharacterException:
                 dmenu_err("Unable to type string...bad character.\n"
                           "Try setting `type_library = xdotool` in config.ini")
                 return
@@ -733,6 +789,7 @@ def type_entry_xdotool(entry, tokens):
         else:
             call(['xdotool', 'type', token])
 
+
 YDOTOOL_AUTOTYPE_TOKENS = {
     "{TAB}"       : ['key', 'TAB'],
     "{ENTER}"     : ['key', 'ENTER'],
@@ -756,9 +813,9 @@ YDOTOOL_AUTOTYPE_TOKENS = {
     "{BREAK}"     : ['key', 'BREAK'],
     "{CAPSLOCK}"  : ['key', 'CAPSLOCK'],
     "{ESC}"       : ['key', 'ESC'],
-    #"{WIN}"       : ['key', 'Super'],
-    #"{LWIN}"      : ['key', 'Super_L'],
-    #"{RWIN}"      : ['key', 'Super_R'],
+    # "{WIN}"       : ['key', 'Super'],
+    # "{LWIN}"      : ['key', 'Super_L'],
+    # "{RWIN}"      : ['key', 'Super_R'],
     # "{APPS}"      : ['key', ''],
     # "{HELP}"      : ['key', ''],
     "{NUMLOCK}"   : ['key', 'NUMLOCK'],
@@ -797,8 +854,9 @@ YDOTOOL_AUTOTYPE_TOKENS = {
     "+"           : ['key', 'LEFTSHIFT'],
     "^"           : ['Key', 'LEFTCTRL'],
     "%"           : ['key', 'LEFTALT'],
-    #"@"           : ['key', 'Super']
+    # "@"           : ['key', 'Super']
 }
+
 
 def type_entry_ydotool(entry, tokens):
     """Auto-type entry entry using ydotool
@@ -832,11 +890,12 @@ def type_entry_ydotool(entry, tokens):
         else:
             call(['ydotool', 'type', token])
 
+
 def type_text(data):
     """Type the given text data
 
     """
-    library = 'pyuserinput'
+    library = 'pynput'
     if CONF.has_option('database', 'type_library'):
         library = CONF.get('database', 'type_library')
     if library == 'xdotool':
@@ -844,10 +903,10 @@ def type_text(data):
     elif library == 'ydotool':
         call(['ydotool', 'type', data])
     else:
-        kbd = PyKeyboard()
+        kbd = keyboard.Controller()
         try:
-            kbd.type_string(data)
-        except (X11Error, KeyError):
+            kbd.type(data)
+        except kbd.InvalidCharacterException:
             dmenu_err("Unable to type string...bad character.\n"
                       "Try setting `type_library = xdotool` in config.ini")
 
@@ -907,7 +966,7 @@ def manage_groups(kpo):
     group = False
     while edit is True:
         input_b = b"\n".join(i.encode(ENC) for i in options) + b"\n\n" + \
-                b"\n".join(i.path.encode(ENC) for i in kpo.groups)
+            b"\n".join(i.path.encode(ENC) for i in kpo.groups)
         sel = dmenu_select(len(options) + len(kpo.groups) + 1, "Groups", inp=input_b)
         if not sel:
             edit = False
@@ -1108,10 +1167,18 @@ def edit_entry(kpo, kp_entry):  # pylint: disable=too-many-return-statements, to
         return True
     pw_choice = ""
     if field == 'password':
-        input_b = b"Generate password\nManually enter password\n"
-        pw_choice = dmenu_select(2, "Password", inp=input_b)
+        inputs_b = [
+            b"Generate password",
+            b"Manually enter password",
+        ]
+        if kp_entry.password:
+            inputs_b.append(b"Type existing password")
+        pw_choice = dmenu_select(len(inputs_b), "Password", inp=b"\n".join(inputs_b))
         if pw_choice == "Manually enter password":
             pass
+        elif pw_choice == "Type existing password":
+            type_text(kp_entry.password)
+            return False
         elif not pw_choice:
             return True
         else:
@@ -1124,22 +1191,20 @@ def edit_entry(kpo, kp_entry):  # pylint: disable=too-many-return-statements, to
                 length = int(length)
             except ValueError:
                 length = 20
-            input_b = b"True\nFalse\n"
-            digits = dmenu_select(2, "Use digits? True/False", inp=input_b)
-            if not digits:
+            chars = get_password_chars()
+            if chars is False:
                 return True
-            digits = False if digits == 'False' else True
-            spec = dmenu_select(2, "Use special characters? True/False", inp=input_b)
-            if not spec:
+            sel = gen_passwd(chars, length)
+            if sel is False:
+                dmenu_err("Number of char groups desired is more than requested pw length")
                 return True
-            spec = False if spec == 'False' else True
-            sel = gen_passwd(length, digits, spec)
+
     if field == 'autotype_enabled':
         input_b = b"True\nFalse\n"
         at_enab = dmenu_select(2, "Autotype Enabled? True/False", inp=input_b)
         if not at_enab:
             return True
-        sel = False if at_enab == 'False' else True
+        sel = not at_enab == 'False'
     if (field not in ('password', 'notes', 'path', 'autotype_enabled')) or pw_choice:
         sel = dmenu_select(1, "{}".format(field.capitalize()), inp=edit_b)
         if not sel:
@@ -1187,7 +1252,12 @@ def edit_notes(note):
         fname.write(note)
         fname.flush()
         editor.append(fname.name)
-        call(editor)
+        try:
+            call(editor)
+        except FileNotFoundError:
+            dmenu_err("Terminal not found. Please update config.ini.")
+            note = '' if not note else note.decode(ENC)
+            return note
         fname.seek(0)
         note = fname.read()
     note = '' if not note else note.decode(ENC)
@@ -1264,7 +1334,7 @@ class DmenuRunner(Process):
             self.server.kill_flag.set()
             self.server.start_q.set()
 
-    def dmenu_run(self, default_option):  # pylint: disable=too-many-branches,too-many-return-statements
+    def dmenu_run(self, default_option):
         """Run dmenu with the given list of Keepass Entry objects
 
         If 'hide_groups' is defined in config.ini, hide those from main and

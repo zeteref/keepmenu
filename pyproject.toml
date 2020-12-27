@@ -7,7 +7,8 @@ authors = ["zeteref <zeteref@gmail.com>"]
 [tool.poetry.dependencies]
 python = "^3.7"
 pykeepass = "^3.0"
-PyUserInput = "^0.1.11"
+xlib = "^0.21"
+pynput = "^1.7.2"
 
 [tool.poetry.dev-dependencies]
 
