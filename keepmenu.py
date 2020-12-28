@@ -7,6 +7,7 @@ import configparser
 import argparse
 import logging
 
+from functools import partial
 from contextlib import closing
 from enum import Enum
 import errno
@@ -49,7 +50,7 @@ except ImportError:
 AUTH_FILE = expanduser("~/.cache/.keepmenu-auth")
 CONF_FILE = expanduser("~/.config/keepmenu/config.ini")
 
-class MenuOptions(Enum):
+class MenuOption(Enum):
     ViewEntry = 0
     Edit = 1
     Add = 2
@@ -62,14 +63,15 @@ class MenuOptions(Enum):
 
     def description(self):
         return {
-           self.TypePassword:'Type password',
-           self.ViewEntry:'View Individual entry',
-           self.Edit:'Edit entries',
-           self.Add:'Add entry',
-           self.ManageGroups:'Manage groups',
-           self.ReloadDB:'Reload database',
-           self.KillDaemon:'Kill Keepmenu daemon',
-           self.TypeEntry:'Select entry to autotype',
+            self.TypePassword:'Type password',
+            self.ViewEntry:'View Individual entry',
+            self.Edit:'Edit entries',
+            self.Add:'Add entry',
+            self.ManageGroups:'Manage groups',
+            self.TypeUsername:'Type username',
+            self.ReloadDB:'Reload database',
+            self.KillDaemon:'Kill Keepmenu daemon',
+            self.TypeEntry:'Select entry to autotype',
         }.get(self)
 
 def find_free_port():
@@ -911,7 +913,7 @@ def type_text(data):
                       "Try setting `type_library = xdotool` in config.ini")
 
 
-def view_all_entries(options, entries_descriptions):
+def view_all_entries(options, entries_descriptions, prompt='Entries'):
     """Generate numbered list of all Keepass entries and open with dmenu.
 
     Returns: dmenu selection
@@ -924,7 +926,7 @@ def view_all_entries(options, entries_descriptions):
         entries_b = options_b + kp_entries_b
     else:
         entries_b = kp_entries_b
-    return dmenu_select(min(DMENU_LEN, len(options) + len(entries_descriptions)), inp=entries_b)
+    return dmenu_select(min(DMENU_LEN, len(options) + len(entries_descriptions)), prompt, inp=entries_b)
 
 
 def select_group(kpo, prompt="Groups"):
@@ -1275,6 +1277,19 @@ def view_notes(notes):
     sel = dmenu_select(min(DMENU_LEN, len(notes_l)), inp=notes_b)
     return sel
 
+
+# extract _entry_description and _description_idx functions here to be able to
+# easily change format of displayed entry
+
+def _entry_description(idx, idx_align, e):
+    "return text describing entry (used to select entry from menu)"
+    return f'{idx:>{idx_align}} - {e.path} - {e.username} - {e.url}'
+
+def _description_idx(description):
+    "extract entry idx from text used to select it"
+    return int(description.split('-', 1)[0])
+
+
 class DmenuRunner(Process):
     """Listen for dmenu calling event and run keepmenu
 
@@ -1290,18 +1305,17 @@ class DmenuRunner(Process):
             self.server.kill_flag.set()
             sys.exit()
 
-        self.options = {
-            MenuOptions.TypePassword:self.type_password,
-            MenuOptions.TypeUsername:self.type_username,
-            MenuOptions.TypeEntry:self.type_entry,
-            MenuOptions.ViewEntry:self.view_entry,
-            MenuOptions.Edit:self.edit_entry,
-            MenuOptions.Add:self.add_entry,
-            MenuOptions.ManageGroups:self.manage_groups,
-            MenuOptions.ReloadDB:self.reload_db,
-            MenuOptions.KillDaemon:self.kill_daemon
+        self.actions = {
+            MenuOption.TypePassword:self.type_password,
+            MenuOption.TypeUsername:self.type_username,
+            MenuOption.TypeEntry:self.type_entry,
+            MenuOption.ViewEntry:self.view_entry,
+            MenuOption.Edit:self.edit_entry,
+            MenuOption.Add:self.add_entry,
+            MenuOption.ManageGroups:self.manage_groups,
+            MenuOption.ReloadDB:self.reload_db,
+            MenuOption.KillDaemon:self.kill_daemon
         }
-
 
     def _set_timer(self):
         """Set inactivity timer
@@ -1313,13 +1327,13 @@ class DmenuRunner(Process):
 
     def run(self):
         while True:
-            default_option = self.server.start_q.get()
+            option = self.server.start_q.get()
             if self.server.kill_flag.is_set():
                 break
             if not self.kpo:
                 pass
             else:
-                self.dmenu_run(default_option)
+                self.dmenu_run(option)
             if self.server.cache_time_expired.is_set():
                 self.server.kill_flag.set()
             if self.server.kill_flag.is_set():
@@ -1334,7 +1348,7 @@ class DmenuRunner(Process):
             self.server.kill_flag.set()
             self.server.start_q.set()
 
-    def dmenu_run(self, default_option):
+    def dmenu_run(self, option):
         """Run dmenu with the given list of Keepass Entry objects
 
         If 'hide_groups' is defined in config.ini, hide those from main and
@@ -1357,138 +1371,143 @@ class DmenuRunner(Process):
 
         self._set_timer()
 
-        opt_descriptions = [x.description() for x in self.options.keys()]
-        selection = view_all_entries(opt_descriptions, self.get_entries_descriptions())
+        if option is None:
+            option = self.dmenu_select_option()
 
-        option = self.get_option(selection)
+        if option:
+            action = self.actions[option]
+            finished = action(prompt=option.description())
 
-        LOG.info('op %s, sel %s, def %s', option, selection, default_option)
+            if not finished:
+                self.dmenu_run(None)
 
-        try:
-            if option:
-                option()
-            elif selection:
-                self.options[default_option](selection)
-        except (ValueError, TypeError):
-            LOG.exception('unexpected error')
-            return
+    def dmenu_select_option(self):
+        selection = view_all_entries(
+            [],
+            [f'{op.description()}' for op in self.actions.keys()],
+            prompt='Select action'
+        )
 
-    def type_entry(self, sel=None):
-        if not sel:
-            sel = view_all_entries([], self.get_entries_descriptions())
-        entry = self.get_selected_entry(sel)
-        type_entry(entry)
+        return next(
+            (x for x in self.actions if x.description() == selection),
+            None
+        )
 
-    def type_password(self, sel=None):
-        if not sel:
-            sel = view_all_entries([], self.get_entries_descriptions())
-        entry = self.get_selected_entry(sel)
-        type_text(entry.password)
+    def type_entry(self, prompt=None):
+        sel = self.dmenu_select(prompt)
 
-    def type_username(self, sel=None):
-        if not sel:
-            sel = view_all_entries([], self.get_entries_descriptions())
-        entry = self.get_selected_entry(sel)
-        type_text(entry.username)
+        if sel:
+            entry = self.get_selected_entry(sel)
+            type_entry(entry)
+            return True
 
-    def view_entry(self, sel=None):
-        if not sel:
-            sel = view_all_entries([], self.get_entries_descriptions())
-        entry = self.get_selected_entry(sel)
-        text = view_entry(entry)
-        type_text(text)
+    def type_password(self, prompt=None):
+        sel = self.dmenu_select(prompt)
 
-    def edit_entry(self):
-        sel = view_all_entries([], self.get_entries_descriptions(include_hidden=True))
-        entry = self.get_selected_entry(sel)
-        edit = True
+        if sel:
+            entry = self.get_selected_entry(sel)
+            type_text(entry.password or '')
+            return True
 
-        while edit is True:
-            edit = edit_entry(self.kpo, entry)
+    def type_username(self, prompt=None):
+        sel = self.dmenu_select(prompt)
 
-        self.kpo.save()
-        self.kpo = get_entries(self.database)
+        if sel:
+            entry = self.get_selected_entry(sel)
+            type_text(entry.username or '')
+            return True
 
-    def add_entry(self):
+    def view_entry(self, prompt=None):
+        sel = self.dmenu_select(prompt)
+
+        if sel:
+            entry = self.get_selected_entry(sel)
+            text = view_entry(entry)
+            type_text(text or '')
+            return True
+
+    def edit_entry(self, prompt=None):
+        sel = self.dmenu_select(prompt, include_hidden=True)
+
+        if sel:
+            entry = self.get_selected_entry(sel)
+            edit = True
+
+            while edit is True:
+                edit = edit_entry(self.kpo, entry)
+
+            self.kpo.save()
+            self.kpo = get_entries(self.database)
+            return True
+
+    def add_entry(self, **kwds):
         entry = add_entry(self.kpo)
 
         if entry:
             self.kpo.save()
             self.kpo = get_entries(self.database)
+            return True
 
-    def manage_groups(self):
+    def manage_groups(self, **kwds):
         group = manage_groups(self.kpo)
 
         if group:
             self.kpo.save()
             self.kpo = get_entries(self.database)
+            return True
 
-    def reload_db(self):
+    def reload_db(self, **kwds):
         self.kpo = get_entries(self.database)
 
-        if self.kpo:
-            self.dmenu_run(MenuOptions.TypeEntry)
-
-    def kill_daemon(self):
+    def kill_daemon(self, **kwds):
         try:
             self.server.kill_flag.set()
         except (EOFError, IOError):
-            return
+            pass
 
-    def get_option(self, description):
-        menuoption = next((x for x in self.options if x.description() == description), None)
-        if menuoption:
-            return self.options[menuoption]
-        
+        return True
+
+    def dmenu_select(self, prompt, *, include_hidden=False, options=None):
+        kwds = {'prompt': prompt} if prompt else {}
+
+        return view_all_entries(
+            options or [],
+            self.get_entries_descriptions(include_hidden=include_hidden),
+            **kwds
+        )
+
+    def get_entries_descriptions(self, *, include_hidden=False):
+        idx_align = len(str(len(self.kpo.entries)))
+
+        return [
+            _entry_description(idx, idx_align, entry)
+            for idx, entry in enumerate(self.kpo.entries)
+            if include_hidden or not self.is_hidden(entry)
+        ]
+
+    def get_selected_entry(self, description):
+        if description:
+            return self.kpo.entries[_description_idx(description)]
+
         return None
-
-    def get_entries_descriptions(self, *, include_hidden=False):
-        return EntrySelector(self.kpo).get_entries_descriptions(include_hidden=include_hidden)
-
-    def get_selected_entry(self, selection):
-        return EntrySelector(self.kpo).get_selected_entry(selection)
-
-class EntrySelector:
-    def __init__(self, kpo):
-        self.kpo = kpo
-
-        # idx padding in description
-        self.idx_align = len(str(len(self.kpo.entries)))
-
-    def get_entries_descriptions(self, *, include_hidden=False):
-        if include_hidden:
-            return [self.entry2text(idx, entry) 
-                    for idx, entry in enumerate(self.kpo.entries)]
-
-        return [self.entry2text(idx, entry) 
-                for idx, entry in enumerate(self.kpo.entries)
-                if not self.is_hidden(entry)]
 
     def is_hidden(self, entry):
         entry_group = entry.path.rstrip(entry.title)
         return any(group in entry_group for group in self.get_hidden_groups())
 
-    def get_selected_entry(self, text):
-        return self.kpo.entries[self.text2idx(text)]
-
-    def entry2text(self, idx, e):
-        "return text used to select entry"
-        return f'{idx:>{self.idx_align}} - {e.path} - {e.username} - {e.url}'
-
-    def text2idx(self, description):
-        "extract entry idx from text used to select entry"
-        return int(description.split('-', 1)[0])
-
     def get_hidden_groups(self):
-        if CONF.has_option("database", "hide_groups"):
-            hid_groups = CONF.get("database", "hide_groups").split(",")
-            # Validate ignored group names in config.ini
-            hid_groups = [i for i in hid_groups if i in
-                          [j.name for j in self.kpo.groups]]
-        else:
-            hid_groups = []
+        # Validate ignored group names in config.ini
 
-        return hid_groups
+        if CONF.has_option("database", "hide_groups"):
+            return [
+                hg for hg in CONF.get("database", "hide_groups").split(",")
+                if hg in [
+                    g.name for g in self.kpo.groups
+                ]
+            ]
+
+        return []
+
 
 class Server(Process):
     """Run BaseManager server to listen for dmenu calling events
@@ -1518,13 +1537,15 @@ class Server(Process):
 
     def show_dmenu(self, args):
         if args.type_password == True:
-            default_option = MenuOptions.TypePassword
+            default_option = MenuOption.TypePassword
         elif args.view_entry == True:
-            default_option = MenuOptions.ViewEntry
+            default_option = MenuOption.ViewEntry
         elif args.type_username == True:
-            default_option = MenuOptions.TypeUsername
+            default_option = MenuOption.TypeUsername
+        elif args.type_entry == True:
+            default_option = MenuOption.TypeEntry
         else:
-            default_option = MenuOptions.TypeEntry
+            default_option = None
 
         self.start_q.put(default_option)
 
@@ -1562,6 +1583,7 @@ def main():
     parser.add_argument('--type-password', action='store_true', default='False', dest='type_password')
     parser.add_argument('--view-entry', action='store_true', default='False', dest='view_entry')
     parser.add_argument('--type-username', action='store_true', default='False', dest='type_username')
+    parser.add_argument('--type-entry', action='store_true', default='False', dest='type_entry')
     args = parser.parse_args()
 
     try:
